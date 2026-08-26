@@ -1439,7 +1439,7 @@
       <div class="hero-badge-group">
         <span class="badge-pill">🏛️ 한양여대 유아교육과</span>
         <span class="badge-pill">📘 아동권리와 복지</span>
-        <span class="badge-pill">🤖 Gemini 2.5 Flash 연동</span>
+        <span class="badge-pill" id="heroModelBadge">🤖 Gemini 3.6 Flash 연동</span>
       </div>
     </div>
 
@@ -1534,7 +1534,7 @@
             </form>
             <div class="input-footnote">
               <span>Enter로 전송, Shift+Enter로 줄바꿈</span>
-              <span id="modelIndicator">연동 모델: gemini-2.5-flash</span>
+              <span id="modelIndicator">연동 모델: gemini-3.6-flash</span>
             </div>
           </div>
         </section>
@@ -1934,10 +1934,10 @@
         <div class="form-group">
           <label class="form-label" for="modelSelect">사용 AI 모델</label>
           <select id="modelSelect" class="form-input">
-            <option value="gemini-2.5-flash">gemini-2.5-flash (빠르고 강력함 - 기본 권장)</option>
-            <option value="gemini-1.5-flash">gemini-1.5-flash (경량 고속)</option>
-            <option value="gemini-2.0-flash">gemini-2.0-flash (차세대 모델)</option>
-            <option value="gemini-2.5-pro">gemini-2.5-pro (심층 추론)</option>
+            <option value="gemini-3.6-flash">gemini-3.6-flash (최신 권장 모델 - 초고속·고성능)</option>
+            <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (경량 고속 튜터 모델)</option>
+            <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (안정적 튜터 모델)</option>
+            <option value="gemini-2.0-flash">gemini-2.0-flash</option>
           </select>
         </div>
 
@@ -1987,6 +1987,9 @@
     const STORAGE_KEY_MODEL = 'hwue_child_rights_gemini_model';
     const STORAGE_KEY_CHAT = 'hwue_child_rights_chat_history';
 
+    // Model candidate list for automatic fallback if a model is unavailable
+    const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
+
     const SYSTEM_INSTRUCTION = `당신은 한양여자대학교 유아교육과 학생들을 위한 '아동권리와 복지' 전문 교수이자 AI 조교입니다.
 유엔 아동권리협약(생존권, 보호권, 발달권, 참여권)과 보육·유아교육 현장 사례(2019 개정 누리과정, 아동학대 예방 및 신고의무 등)를 바탕으로 친절하고 따뜻하며 학문적 깊이가 있는 전문적인 톤으로 답변해주세요.
 답변 시 다음 사항을 유의해주세요:
@@ -2035,15 +2038,23 @@
        -------------------------------------------------------------------------- */
     function initApiKey() {
       const savedKey = localStorage.getItem(STORAGE_KEY_API);
-      const savedModel = localStorage.getItem(STORAGE_KEY_MODEL) || 'gemini-2.5-flash';
+      let savedModel = localStorage.getItem(STORAGE_KEY_MODEL);
+      
+      // Auto-migrate legacy or deprecated model names to gemini-3.6-flash
+      if (!savedModel || savedModel === 'gemini-2.5-flash' || savedModel === 'gemini-1.5-flash') {
+        savedModel = 'gemini-3.6-flash';
+        localStorage.setItem(STORAGE_KEY_MODEL, savedModel);
+      }
       
       const dot = document.getElementById('apiStatusDot');
       const text = document.getElementById('apiStatusText');
       const modelSelect = document.getElementById('modelSelect');
       const modelIndicator = document.getElementById('modelIndicator');
+      const heroBadge = document.getElementById('heroModelBadge');
 
       if (modelSelect) modelSelect.value = savedModel;
       if (modelIndicator) modelIndicator.textContent = `연동 모델: ${savedModel}`;
+      if (heroBadge) heroBadge.textContent = `🤖 Gemini 연동 (${savedModel})`;
 
       if (savedKey && savedKey.trim() !== '') {
         dot.classList.add('active');
@@ -2073,7 +2084,7 @@
       if (keyInput) {
         localStorage.setItem(STORAGE_KEY_API, keyInput);
         localStorage.setItem(STORAGE_KEY_MODEL, model);
-        showToast('Gemini API 키가 안전하게 저장되었습니다.');
+        showToast('Gemini API 키 및 모델이 안전하게 저장되었습니다.');
       } else {
         localStorage.removeItem(STORAGE_KEY_API);
         showToast('API 키가 제거되었습니다.');
@@ -2104,7 +2115,7 @@
     }
 
     /* --------------------------------------------------------------------------
-       AI Chat Logic (Gemini API with fallback / demo mode)
+       AI Chat Logic (Gemini API with Smart Auto-Fallback & Demo Mode)
        -------------------------------------------------------------------------- */
     function handleTextareaKeydown(e) {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -2142,7 +2153,7 @@
 
       // Check API Key
       const apiKey = localStorage.getItem(STORAGE_KEY_API);
-      const model = localStorage.getItem(STORAGE_KEY_MODEL) || 'gemini-2.5-flash';
+      const selectedModel = localStorage.getItem(STORAGE_KEY_MODEL) || 'gemini-3.6-flash';
 
       if (!apiKey) {
         renderDemoResponse(userText);
@@ -2155,17 +2166,48 @@
       const loaderId = appendTypingIndicator();
 
       try {
-        const responseText = await callGeminiApi(apiKey, model, userText);
+        const responseText = await executeGeminiRequestWithFallback(apiKey, selectedModel, userText);
         removeTypingIndicator(loaderId);
         appendMessage('assistant', responseText);
         saveChatHistory();
       } catch (err) {
         removeTypingIndicator(loaderId);
-        appendMessage('assistant', `⚠️ **오류가 발생했습니다.**\n\n사유: ${err.message}\n\n상단의 **[API 키 설정]**에서 유효한 Gemini API 키가 입력되어 있는지 확인해주세요.`);
+        appendMessage('assistant', `⚠️ **오류가 발생했습니다.**\n\n사유: ${err.message}\n\n상단의 **[API 키 설정]**에서 유효한 Gemini API 키 또는 다른 모델을 선택해주세요.`);
       } finally {
         isGenerating = false;
         toggleSendButton(false);
       }
+    }
+
+    /* Auto-Fallback runner: attempts selectedModel, then fallback candidates if deprecated or not found */
+    async function executeGeminiRequestWithFallback(apiKey, primaryModel, userPrompt) {
+      const modelsToTry = [primaryModel, ...FALLBACK_MODELS.filter(m => m !== primaryModel)];
+      let lastError = null;
+
+      for (const model of modelsToTry) {
+        try {
+          const result = await callGeminiApi(apiKey, model, userPrompt);
+          if (model !== primaryModel) {
+            // Auto-update to working model
+            localStorage.setItem(STORAGE_KEY_MODEL, model);
+            initApiKey();
+          }
+          return result;
+        } catch (err) {
+          lastError = err;
+          // If error mentions deprecation or model not found, try next candidate
+          const isModelIssue = err.message.includes('not available') || 
+                               err.message.includes('not found') || 
+                               err.message.includes('deprecated') || 
+                               err.message.includes('404');
+          if (!isModelIssue) {
+            // If it's a 401/403 (Invalid key) or 429 quota error, rethrow directly
+            throw err;
+          }
+        }
+      }
+
+      throw lastError || new Error('사용 가능한 Gemini 모델을 찾을 수 없습니다.');
     }
 
     async function callGeminiApi(apiKey, model, userPrompt) {
@@ -2174,7 +2216,7 @@
       // Build context history for Gemini API
       const contents = [];
 
-      // Add conversation history
+      // Add recent conversation history
       chatHistory.slice(-6).forEach(msg => {
         contents.push({
           role: msg.role === 'user' ? 'user' : 'model',
